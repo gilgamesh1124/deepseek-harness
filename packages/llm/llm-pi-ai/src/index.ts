@@ -71,6 +71,7 @@ import { discoverModels } from './discovery.ts'
 import { FileCredentialStore } from './oauth-store.ts'
 import { authUrlInstructions, CommandInteraction, deviceCodeInstructions } from './interaction.ts'
 import type { LoginMethod } from './interaction.ts'
+import { LlmOauth } from './oauth-service.ts'
 
 /** Default filename of the file-backed OAuth credential store under the harness home. */
 const OAUTH_STORE_FILENAME = '.oauth-credentials.json'
@@ -89,6 +90,14 @@ export type {
   ResolvedPiAiProviderProfile,
 } from './config.ts'
 export { supportedProtocols } from './provider.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** The `llmOauth` service: provider OAuth login/logout/status for configuration surfaces. */
+    llmOauth: LlmOauth
+  }
+}
+export type { OauthLoginStart, OauthStatus } from './oauth-service.ts'
 
 export const name = 'llm-pi-ai'
 export const inject = ['llm']
@@ -223,6 +232,9 @@ export function apply(ctx: Context, config: Config): void {
       )
     },
   })
+  // The `llmOauth` service registers on construction; the host RPC layer
+  // reaches it through `ctx.get('llmOauth')` for OAuth login/logout/status.
+  new LlmOauth(ctx, adapter)
   // The full installed catalog is configurable from the moment the plugin
   // mounts — dormant or not — so configuration surfaces can offer every
   // pi-ai provider before any route exists. Hand-declared routes join it as

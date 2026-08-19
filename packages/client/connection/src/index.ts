@@ -116,6 +116,11 @@ const PRIVILEGED_METHODS = new Set([
   'credentials.set',
   'credentials.unset',
   'llm.discoverModels',
+  // OAuth login/logout/status mutate or reveal the credential plane for a
+  // provider route, so they sit with the rest of the configuration plane.
+  'llm.oauthStatus',
+  'llm.oauthLogout',
+  'llm.oauthLoginStart',
 ])
 
 /**

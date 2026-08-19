@@ -6,7 +6,7 @@
 import { z } from 'zod'
 import type { RequestPayload, ResponseValue } from './rpc-map.ts'
 import type { Wire } from './rpc.schema.ts'
-import type { ConfigurableProviderView, DiscoveredModelView } from './llm.ts'
+import type { ConfigurableProviderView, DiscoveredModelView, OauthLoginStartView, OauthStatusView } from './llm.ts'
 import { modelCatalogFailureSchema, modelProviderGroupSchema } from './sessions.schema.ts'
 
 /** ConfigurableProviderView row of llm.providers. */
@@ -62,3 +62,50 @@ export const llmDiscoverModelsRequestSchema = z.object({
 export const llmDiscoverModelsValueSchema = z.object({
   models: z.array(discoveredModelViewSchema),
 }) satisfies z.ZodType<Wire<ResponseValue<'llm.discoverModels'>>>
+
+/** OauthStatusView row of llm.oauthStatus. */
+export const oauthStatusViewSchema = z.object({
+  authenticated: z.boolean(),
+  type: z.string().optional(),
+}) satisfies z.ZodType<Wire<OauthStatusView>>
+
+/** llm.oauthStatus request payload. */
+export const llmOauthStatusRequestSchema = z.object({
+  provider: z.string().min(1),
+}) satisfies z.ZodType<Wire<RequestPayload<'llm.oauthStatus'>>>
+
+/** llm.oauthStatus response value. */
+export const llmOauthStatusValueSchema = z.object({
+  authenticated: z.boolean(),
+  type: z.string().optional(),
+}) satisfies z.ZodType<Wire<ResponseValue<'llm.oauthStatus'>>>
+
+/** llm.oauthLogout request payload. */
+export const llmOauthLogoutRequestSchema = z.object({
+  provider: z.string().min(1),
+}) satisfies z.ZodType<Wire<RequestPayload<'llm.oauthLogout'>>>
+
+/** llm.oauthLogout response value. */
+export const llmOauthLogoutValueSchema = z.object({}) satisfies z.ZodType<Wire<ResponseValue<'llm.oauthLogout'>>>
+
+/** OauthLoginStartView row of llm.oauthLoginStart. */
+export const oauthLoginStartViewSchema = z.object({
+  loginUrl: z.string().optional(),
+  userCode: z.string().optional(),
+  verificationUri: z.string().optional(),
+  authenticated: z.boolean(),
+}) satisfies z.ZodType<Wire<OauthLoginStartView>>
+
+/** llm.oauthLoginStart request payload. */
+export const llmOauthLoginStartRequestSchema = z.object({
+  provider: z.string().min(1),
+  method: z.enum(['browser', 'device']).optional(),
+}) satisfies z.ZodType<Wire<RequestPayload<'llm.oauthLoginStart'>>>
+
+/** llm.oauthLoginStart response value. */
+export const llmOauthLoginStartValueSchema = z.object({
+  loginUrl: z.string().optional(),
+  userCode: z.string().optional(),
+  verificationUri: z.string().optional(),
+  authenticated: z.boolean(),
+}) satisfies z.ZodType<Wire<ResponseValue<'llm.oauthLoginStart'>>>

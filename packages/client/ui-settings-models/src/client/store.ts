@@ -46,6 +46,45 @@ export interface ModelsSettingsState {
   rows: readonly ProviderRow[]
   /** Namespace views by ns, for the editor's schema/layers/secrets. */
   namespaces: ReadonlyMap<string, SettingsNamespaceView>
+  /** Per-provider OAuth state, keyed by provider route (populated lazily on the first OAuth action). */
+  oauth: Readonly<Record<string, OauthProviderState>>
+}
+
+/**
+ * Live OAuth state of one provider route, as projected from the last OAuth
+ * operation. Only providers the client treats as OAuth-native populate a row.
+ */
+export interface OauthProviderState {
+  /** Whether a durable OAuth credential is currently stored for the route. */
+  authenticated: boolean
+  /** Whether a login flow is known to be running in the background. */
+  pending?: boolean
+  /** One-time code of the last device-code login start, to show the user. */
+  userCode?: string
+  /** Verification URL the user opens to enter {@link OauthProviderState.userCode}. */
+  verificationUri?: string
+  /** Authorization URL of the last browser-flow login start, to show the user. */
+  loginUrl?: string
+  /** Failure text of the last OAuth operation. */
+  error?: string
+}
+
+/**
+ * The one provider route this adapter family authenticates through OAuth. The
+ * server directory does not expose the flag, so the client derives it from the
+ * route id — see the adapter's own `catalogProviderOffersOAuth`.
+ */
+export const OAUTH_NATIVE_PROVIDER = 'openai-codex'
+
+/**
+ * Whether a provider route is OAuth-native (its editor shows the OAuth login
+ * control beside the api-key field). The directory exposes no capability flag,
+ * so this is a client-side constant matching the adapter's OAuth catalog.
+ * @param provider - provider route id.
+ * @returns whether the route authenticates through OAuth.
+ */
+export function isOauthNative(provider: string): boolean {
+  return provider === OAUTH_NATIVE_PROVIDER
 }
 
 /**
@@ -99,11 +138,17 @@ function apiKeyEnvOf(namespace: SettingsNamespaceView | undefined, path: readonl
 export class ModelsSettingsStore {
   /** The snapshot the section renders from (uSES-safe store). */
   readonly store: SnapshotStore<ModelsSettingsState> = createSnapshotStore<ModelsSettingsState>({
-    status: 'idle', error: null, credentialError: null, writable: false, rows: [], namespaces: new Map(),
+    status: 'idle', error: null, credentialError: null, writable: false, rows: [], namespaces: new Map(), oauth: {},
   })
 
   /** Latest load wins; an older response never overwrites a newer one. */
   private generation = 0
+  /** Per-provider in-flight login status poll, so loginStart never starts two. */
+  private readonly oauthPolls = new Map<string, Promise<void>>()
+  /** Delay between login status polls (overridable for deterministic tests). */
+  oauthStatusIntervalMs = 300
+  /** How many status polls a login start watches before giving up. */
+  oauthStatusPollAttempts = 20
 
   /**
    * @param api - the wire face (settings/credentials/llm domains).
@@ -187,6 +232,136 @@ export class ModelsSettingsStore {
       s.namespaces = namespaces
     })
   }
+
+  /** Project one stored OAuth state into the snapshot for a provider. */
+  private setOauth(provider: string, patch: Partial<OauthProviderState>): void {
+    this.store.update((s) => {
+      const prior = s.oauth[provider] ?? { authenticated: false }
+      // Every patch merges over the current row, so a status poll or logout
+      // never erases the device-code/login fields the card is still showing;
+      // `authenticated` is resolved to a definite value because it is required
+      // on the row while `patch` may leave it unset.
+      const merged: OauthProviderState = {
+        ...prior,
+        ...patch,
+        authenticated: 'authenticated' in patch ? patch.authenticated ?? false : prior.authenticated,
+      }
+      s.oauth = { ...s.oauth, [provider]: merged }
+    })
+  }
+
+  /** Fetch one provider's OAuth status and fold it into the snapshot. */
+  private async refreshOauthStatus(provider: string): Promise<void> {
+    try {
+      const response = await this.api.llm.oauthStatus({ provider })
+      if (!response.result.ok) {
+        this.setOauth(provider, { authenticated: false, error: response.result.error.message })
+        return
+      }
+      const value = response.result.value
+      this.setOauth(provider, { authenticated: value.authenticated })
+    } catch (error) {
+      // A transport failure must not surface as an unhandled rejection; the card
+      // shows the failure instead and stays usable.
+      this.setOauth(provider, { authenticated: false, error: messageOf(error) })
+    }
+  }
+
+  /**
+   * Refresh one provider's OAuth status. Callers render the `oauth` snapshot
+   * row to show whether the user is currently logged in.
+   * @param provider - the provider route to inspect.
+   */
+  async oauthStatus(provider: string): Promise<void> {
+    await this.refreshOauthStatus(provider)
+  }
+
+  /**
+   * Log out one provider route: forget its stored OAuth credential and fold the
+   * cleared status into the snapshot.
+   * @param provider - the provider route to logout.
+   */
+  async oauthLogout(provider: string): Promise<void> {
+    try {
+      const response = await this.api.llm.oauthLogout({ provider })
+      if (!response.result.ok) {
+        this.setOauth(provider, { authenticated: false, error: response.result.error.message })
+        return
+      }
+      this.setOauth(provider, { authenticated: false })
+    } catch (error) {
+      this.setOauth(provider, { authenticated: false, error: messageOf(error) })
+    }
+  }
+
+  /**
+   * Start an OAuth login for one provider route (device flow by default). The
+   * returned one-time code / verification URL is folded into the snapshot for
+   * the card to show, and the background flow is polled until it persists the
+   * credential or gives up, so the status line flips to "logged in" on its own.
+   * @param provider - the provider route to authenticate.
+   * @param method - the login method to request (`device` default).
+   */
+  oauthLoginStart(provider: string, method: 'browser' | 'device' = 'device'): void {
+    const inFlight = this.oauthPolls.get(provider)
+    if (inFlight !== undefined) return
+    const run = this.startLogin(provider, method).finally(() => { this.oauthPolls.delete(provider) })
+    this.oauthPolls.set(provider, run)
+  }
+
+  /** The single login-start+poll run; shared so double-starts are deduped. */
+  private async startLogin(provider: string, method: 'browser' | 'device'): Promise<void> {
+    try {
+      const response = await this.api.llm.oauthLoginStart({ provider, method })
+      if (!response.result.ok) {
+        this.setOauth(provider, { authenticated: false, error: response.result.error.message })
+        return
+      }
+      const start = response.result.value
+      this.setOauth(provider, {
+        authenticated: false,
+        pending: true,
+        ...start.loginUrl === undefined ? {} : { loginUrl: start.loginUrl },
+        ...start.userCode === undefined ? {} : { userCode: start.userCode },
+        ...start.verificationUri === undefined ? {} : { verificationUri: start.verificationUri },
+      })
+      this.oauthLoginDeadline = Date.now() + this.oauthStatusPollAttempts * this.oauthStatusIntervalMs
+      // Poll the status until the background flow persists the credential. The
+      // first check runs immediately so an already-landed login reads through.
+      await this.oauthCheck(provider)
+      let attempt = 0
+      while (attempt < this.oauthStatusPollAttempts) {
+        const row = this.store.getSnapshot().oauth[provider]
+        if (row?.authenticated === true) return
+        if (Date.now() >= this.oauthLoginDeadline) break
+        attempt += 1
+        await new Promise<void>((resolve) => { setTimeout(resolve, this.oauthStatusIntervalMs) })
+        await this.oauthCheck(provider)
+      }
+      // The flow did not settle within the window; leave the card showing the
+      // device code and "not logged in", ready to be re-checked.
+      this.setOauth(provider, { pending: false })
+    } catch (error) {
+      this.setOauth(provider, { authenticated: false, error: messageOf(error) })
+    }
+  }
+
+  /** One status read in the login poll, folding the result and error into the snapshot. */
+  private async oauthCheck(provider: string): Promise<void> {
+    try {
+      const current = await this.api.llm.oauthStatus({ provider })
+      if (!current.result.ok) {
+        this.setOauth(provider, { authenticated: false, error: current.result.error.message })
+        return
+      }
+      if (current.result.value.authenticated) this.setOauth(provider, { authenticated: true, pending: false })
+    } catch (error) {
+      this.setOauth(provider, { authenticated: false, error: messageOf(error) })
+    }
+  }
+
+  /** Deadline stored per login run so the poll has a wall-clock cap. */
+  private oauthLoginDeadline = 0
 }
 
 /**

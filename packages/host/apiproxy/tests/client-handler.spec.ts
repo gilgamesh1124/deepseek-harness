@@ -126,6 +126,9 @@ function scriptedApi(overrides: {
       providers: r => ok(r, { providers: [] }),
       models: r => ok(r, { groups: [], failures: [] }),
       discoverModels: err,
+      oauthStatus: err,
+      oauthLogout: err,
+      oauthLoginStart: err,
       ...overrides.llm,
     },
     events: { mux: () => empty<MuxFrame>(), host: () => empty<HostFrame>(), ...overrides.events },
@@ -811,5 +814,27 @@ describe('config unary surface', () => {
     expect(response.result.ok).toBe(false)
     if (response.result.ok) throw new Error('unreachable')
     expect(response.result.error.code).toBe('bad-request')
+  })
+
+  it('round-trips the llm.oauth surface through the HTTP carrier', async () => {
+    const api = scriptedApi({
+      llm: {
+        providers: r => ok(r, { providers: [] }),
+        models: r => ok(r, { groups: [], failures: [] }),
+        discoverModels: r => Promise.resolve({
+          rpcId: r.rpcId,
+          result: { ok: false as const, error: { code: 'internal' as const, message: 'stub', details: {} } },
+        }),
+        oauthStatus: r => ok(r, { authenticated: true, type: 'oauth' }),
+        oauthLogout: r => ok(r, {}),
+        oauthLoginStart: r => ok(r, { userCode: 'ABCD', verificationUri: 'https://device', authenticated: false }),
+      },
+    })
+    const c = client(api)
+    expect((await c.llm.oauthStatus({ provider: 'openai-codex' })).result)
+      .toEqual({ ok: true, value: { authenticated: true, type: 'oauth' } })
+    expect((await c.llm.oauthLogout({ provider: 'openai-codex' })).result).toEqual({ ok: true, value: {} })
+    expect((await c.llm.oauthLoginStart({ provider: 'openai-codex', method: 'browser' })).result)
+      .toEqual({ ok: true, value: { userCode: 'ABCD', verificationUri: 'https://device', authenticated: false } })
   })
 })

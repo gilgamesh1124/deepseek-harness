@@ -80,6 +80,11 @@ export interface RpcErrorDetailsMap {
    * details name the endpoint asked, never the credential offered.
    */
   'model-discovery-failed': { settingsNs: string; baseURL?: string }
+  /**
+   * An OAuth operation named a provider route the adapter family does not
+   * authenticate through OAuth; the message names the route and the reason.
+   */
+  'oauth-unsupported': { provider: string }
   'title-invalid': { sessionId: SessionId }
   'fork-unavailable': { sessionId: SessionId }
   'subagent-parent-unavailable': { parentSessionId: SessionId }

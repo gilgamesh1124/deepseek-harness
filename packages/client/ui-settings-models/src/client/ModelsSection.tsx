@@ -12,7 +12,7 @@
  * re-renders from pushed invalidations or the post-apply reload.
  */
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { IApiClient } from '@deepseek-ai/dsh-api-remotes/client'
 import { Button, IconPlusOutline16, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -66,16 +66,22 @@ interface ProviderEditorRenderProps extends Pick<
   'namespace' | 'api' | 't' | 'readOnly' | 'onClose'
 > {
   target: EditorTarget
+  /** Reactive OAuth state of the edited provider, for its OAuth control. */
+  oauthState?: ProviderEditorProps['oauthState']
+  /** Store OAuth actions for the edited provider's login/logout control. */
+  oauthActions?: ProviderEditorProps['oauthActions']
 }
 
 /** Render an editor for either the setup posture or an expanded provider row. */
-function renderProviderEditor({ target, ...props }: ProviderEditorRenderProps): ReactNode {
+function renderProviderEditor({ target, oauthState, oauthActions, ...props }: ProviderEditorRenderProps): ReactNode {
   return (
     <ProviderEditor
       provider={target.provider}
       displayName={target.displayName}
       settingsPath={target.settingsPath}
       {...target.declared === true ? { declared: true } : {}}
+      oauthState={oauthState}
+      oauthActions={oauthActions}
       {...props}
     />
   )
@@ -177,6 +183,15 @@ export function ModelsSection(props: ModelsSectionProps): ReactNode {
 function Loaded({ injected }: { injected: ModelsSectionInjected }): ReactNode {
   const { controller, api, t } = injected
   const state = injected.useSnapshot(snapshot => snapshot)
+  // The store's OAuth actions the editors bind to their login/logout control.
+  // Memoized on the stable controller so the reference never changes between
+  // renders: an editor's mount effect keys off it, and a fresh object each
+  // render would re-run that effect (and its status poll) on every re-render.
+  const oauthActions: ProviderEditorProps['oauthActions'] = useMemo(() => ({
+    oauthStatus: async (provider) => { await controller.oauthStatus(provider) },
+    oauthLogout: async (provider) => { await controller.oauthLogout(provider) },
+    oauthLoginStart: (provider, method) => { controller.oauthLoginStart(provider, method) },
+  }), [controller])
   const [editing, setEditing] = useState<EditorTarget | undefined>(undefined)
   const [adding, setAdding] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<EditorTarget | undefined>(undefined)
@@ -300,6 +315,8 @@ function Loaded({ injected }: { injected: ModelsSectionInjected }): ReactNode {
                   api,
                   t,
                   readOnly: !state.writable,
+                  oauthState: state.oauth[target.provider],
+                  oauthActions,
                   onClose: (changed) => { closeSetup(changed, target) },
                 })}
               </li>
@@ -384,6 +401,8 @@ function Loaded({ injected }: { injected: ModelsSectionInjected }): ReactNode {
                   api,
                   t,
                   readOnly: !state.writable,
+                  oauthState: state.oauth[target.provider],
+                  oauthActions,
                   onClose: (changed) => { closeEditor(changed, target) },
                 })
                 : null}
@@ -423,6 +442,8 @@ function Loaded({ injected }: { injected: ModelsSectionInjected }): ReactNode {
                 api={api}
                 t={t}
                 readOnly={!state.writable}
+                oauthState={state.oauth[addTarget.provider]}
+                oauthActions={oauthActions}
                 onClose={(changed) => { closeEditor(changed, addTarget) }}
               />
             </div>

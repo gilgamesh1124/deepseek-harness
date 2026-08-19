@@ -37,6 +37,10 @@ import { approvalRequestIdSchema, approvalResponsePayloadSchema } from '../src/a
 import { askUserQuestionAnswerSchema, questionResponsePayloadSchema } from '../src/api/questions.schema.ts'
 import { goalEditRequestSchema } from '../src/api/goals.schema.ts'
 import { subagentPromptRequestSchema } from '../src/api/subagents.schema.ts'
+import {
+  llmOauthLoginStartRequestSchema, llmOauthLoginStartValueSchema, llmOauthLogoutRequestSchema,
+  llmOauthStatusRequestSchema, llmOauthStatusValueSchema,
+} from '../src/api/llm.schema.ts'
 
 describe('RpcId', () => {
   it('brands a raw string at zero runtime cost', () => {
@@ -566,5 +570,37 @@ describe('agent-preset schemas', () => {
       .toEqual({ opened: false, path: '/presets/mine' })
     // A closed reply must carry the path the surface shows instead.
     expect(() => agentPresetOpenDocumentValueSchema.parse({ opened: false })).toThrow()
+  })
+})
+
+describe('llm oauth schemas', () => {
+  it('round-trips the oauthStatus request and captures the optional type', () => {
+    expect(llmOauthStatusRequestSchema.parse({ provider: 'openai-codex' })).toEqual({ provider: 'openai-codex' })
+    expect(() => llmOauthStatusRequestSchema.parse({ provider: '' })).toThrow()
+    expect(() => llmOauthStatusRequestSchema.parse({})).toThrow()
+    expect(llmOauthStatusValueSchema.parse({ authenticated: true, type: 'oauth' }))
+      .toEqual({ authenticated: true, type: 'oauth' })
+    expect(llmOauthStatusValueSchema.parse({ authenticated: false })).toEqual({ authenticated: false })
+    expect(() => llmOauthStatusValueSchema.parse({})).toThrow()
+  })
+
+  it('round-trips the oauthLogout request and empty value', () => {
+    expect(llmOauthLogoutRequestSchema.parse({ provider: 'openai-codex' })).toEqual({ provider: 'openai-codex' })
+    expect(() => llmOauthLogoutRequestSchema.parse({ provider: '' })).toThrow()
+    expect(llmOauthLoginStartValueSchema.parse({ loginUrl: 'https://auth', authenticated: false }))
+      .toEqual({ loginUrl: 'https://auth', authenticated: false })
+  })
+
+  it('round-trips the oauthLoginStart request and value', () => {
+    expect(llmOauthLoginStartRequestSchema.parse({ provider: 'openai-codex', method: 'device' }))
+      .toEqual({ provider: 'openai-codex', method: 'device' })
+    expect(llmOauthLoginStartRequestSchema.parse({ provider: 'openai-codex' })).toEqual({ provider: 'openai-codex' })
+    // A narrower payload is the caller's choice, but the wire only admits the
+    // two documented methods.
+    expect(() => llmOauthLoginStartRequestSchema.parse({ provider: 'o', method: 'other' })).toThrow()
+    expect(llmOauthLoginStartValueSchema.parse({
+      userCode: 'ABCD', verificationUri: 'https://device', authenticated: false,
+    })).toEqual({ userCode: 'ABCD', verificationUri: 'https://device', authenticated: false })
+    expect(() => llmOauthLoginStartValueSchema.parse({ authenticated: 'yes' })).toThrow()
   })
 })

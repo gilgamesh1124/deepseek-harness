@@ -350,6 +350,49 @@ function err<T>(request: RpcRequest<unknown>, error: RpcError): RpcResponse<T> {
   return { rpcId: request.rpcId, result: { ok: false, error } }
 }
 
+/** The refusal an OAuth operation gets when the llm-pi-ai adapter is not mounted. */
+function oauthUnavailable(): RpcError {
+  return {
+    code: 'internal',
+    message: 'OAuth login is unavailable: this deployment does not mount the llm-pi-ai provider adapter',
+    details: {},
+  }
+}
+
+/**
+ * The `llmOauth` service face the wire calls. Declared here rather than
+ * imported from the adapter package so the RPC layer never drags the heavy
+ * pi-ai runtime graph into its compilation; the llm-pi-ai plugin provides this
+ * exact surface through `ctx.get('llmOauth')`.
+ */
+interface OauthService {
+  status(provider: string): Promise<{ authenticated: boolean; type?: 'oauth' }>
+  logout(provider: string): Promise<void>
+  login(
+    provider: string,
+    method?: 'browser' | 'device',
+  ): Promise<{ loginUrl?: string; userCode?: string; verificationUri?: string; authenticated: boolean }>
+}
+
+/** Resolve the mounted `llmOauth` service, or undefined when llm-pi-ai is absent. */
+function oauthService(ctx: Context): OauthService | undefined {
+  return ctx.get('llmOauth') as OauthService | undefined
+}
+
+/**
+ * Map an `llmOauth` operation failure onto the wire error vocabulary. The
+ * service refuses routes it cannot authenticate through OAuth with a stable
+ * message, which is the one failure the wire names with its own code; every
+ * other failure (login already running, the flow itself) stays internal.
+ */
+function oauthError(request: RpcRequest<unknown>, provider: string, error: unknown): RpcResponse<never> {
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes('does not offer an OAuth login method')) {
+    return err(request, { code: 'oauth-unsupported', message, details: { provider } })
+  }
+  return err(request, { code: 'internal', message, details: {} })
+}
+
 /**
  * The RPC refusal a preset failure becomes, or undefined when the failure is
  * about something else.
@@ -3359,6 +3402,48 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             message: error instanceof Error ? error.message : String(error),
             details: { settingsNs, ...baseURL === undefined ? {} : { baseURL } },
           })
+        }
+      },
+
+      async oauthStatus(request) {
+        const oauth = oauthService(ctx)
+        if (oauth === undefined) return err(request, oauthUnavailable())
+        try {
+          const status = await oauth.status(request.payload.provider)
+          return ok(request, {
+            authenticated: status.authenticated,
+            ...status.type === undefined ? {} : { type: status.type },
+          })
+        } catch (error: unknown) {
+          return oauthError(request, request.payload.provider, error)
+        }
+      },
+
+      async oauthLogout(request) {
+        const oauth = oauthService(ctx)
+        if (oauth === undefined) return err(request, oauthUnavailable())
+        try {
+          await oauth.logout(request.payload.provider)
+          return ok(request, {})
+        } catch (error: unknown) {
+          return oauthError(request, request.payload.provider, error)
+        }
+      },
+
+      async oauthLoginStart(request) {
+        const oauth = oauthService(ctx)
+        if (oauth === undefined) return err(request, oauthUnavailable())
+        const { provider, method } = request.payload
+        try {
+          const start = await oauth.login(provider, method ?? 'device')
+          return ok(request, {
+            ...start.loginUrl === undefined ? {} : { loginUrl: start.loginUrl },
+            ...start.userCode === undefined ? {} : { userCode: start.userCode },
+            ...start.verificationUri === undefined ? {} : { verificationUri: start.verificationUri },
+            authenticated: start.authenticated,
+          })
+        } catch (error: unknown) {
+          return oauthError(request, provider, error)
         }
       },
     },

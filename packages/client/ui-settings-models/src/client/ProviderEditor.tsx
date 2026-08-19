@@ -33,7 +33,8 @@ import {
 import { apiKeyFailure } from './apiKey.ts'
 import { EditorFooter } from './EditorFooter.tsx'
 import { ModelListEditor } from './ModelListEditor.tsx'
-import { deriveKeyRef, messageOf, protocolChoices } from './store.ts'
+import { deriveKeyRef, isOauthNative, messageOf, protocolChoices } from './store.ts'
+import type { ModelsSettingsStore, OauthProviderState } from './store.ts'
 import type { en } from './locales.ts'
 import styles from './ModelsSection.module.css'
 
@@ -69,6 +70,10 @@ export interface ProviderEditorProps {
   t: (key: keyof typeof en) => string
   /** Disable writes (read-only settings provider). */
   readOnly: boolean
+  /** Reactive OAuth state of this provider, when it is OAuth-native. */
+  oauthState?: OauthProviderState | undefined
+  /** Store OAuth actions, driving the login/logout/status control. */
+  oauthActions?: Pick<ModelsSettingsStore, 'oauthStatus' | 'oauthLogout' | 'oauthLoginStart'> | undefined
   /** Render only the credential field and actions, without provider settings. */
   credentialOnly?: boolean
   /** Require a newly entered credential before this editor can submit. */
@@ -187,6 +192,73 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
     )
     return () => { stale = true }
   }, [api.credentials, keyRef])
+
+  // An OAuth-native provider's card primes its status once on open so the
+  // logged-in line is current before any button is pressed.
+  const oauthCapable = isOauthNative(props.provider)
+  useEffect(() => {
+    if (!oauthCapable) return
+    void props.oauthActions?.oauthStatus(props.provider)
+  }, [props.oauthActions, props.provider, oauthCapable])
+
+  /** Render the OAuth login/logout control, shown beside the api-key field. */
+  const renderOauthControl = (disabled_: boolean): ReactNode => {
+    // Absent state reads as not-logged-in with nothing pending, so the control
+    // renders a 登录 button before the first status query lands.
+    const oauth: OauthProviderState = props.oauthState ?? { authenticated: false }
+    const loggedIn = oauth.authenticated
+    const starting = oauth.pending === true
+    const error = oauth.error
+    const oauthShow = starting
+      && (oauth.userCode !== undefined || oauth.verificationUri !== undefined || oauth.loginUrl !== undefined)
+    return (
+      <div className={styles['oauthBlock']}>
+        <span className={styles['fieldLabel']}>{t('oauthLabel')}</span>
+        {loggedIn
+          ? (
+            <p className={styles['oauthStatus']}>
+              {t('oauthLoggedIn')}
+              {' '}
+              <button
+                type="button"
+                className={styles['linkButton']}
+                disabled={disabled_}
+                onClick={() => { void props.oauthActions?.oauthLogout(props.provider) }}
+              >
+                {t('oauthLogout')}
+              </button>
+            </p>
+          )
+          : (
+            <p className={styles['oauthStatus']}>{t('oauthLoggedOut')}</p>
+          )}
+        <button
+          type="button"
+          className={`${styles['secondaryButton']} ${styles['oauthLoginButton']}`}
+          disabled={disabled_ || starting}
+          onClick={() => { props.oauthActions?.oauthLoginStart(props.provider, 'device') }}
+        >
+          {starting ? t('oauthStarting') : t('oauthLogin')}
+        </button>
+        {oauthShow
+          ? (
+            <div className={styles['oauthCode']}>
+              {oauth.loginUrl === undefined
+                ? null
+                : <p className={styles['oauthLine']}><a href={oauth.loginUrl} target="_blank" rel="noreferrer">{t('oauthOpenUrl')}</a></p>}
+              {oauth.verificationUri === undefined
+                ? null
+                : <p className={styles['oauthLine']}>{t('oauthOpenVerification')}: {oauth.verificationUri}</p>}
+              {oauth.userCode === undefined
+                ? null
+                : <p className={styles['oauthLine']}>{t('oauthEnterCode')}: <code className={styles['oauthCodeValue']}>{oauth.userCode}</code></p>}
+            </div>
+          )
+          : null}
+        {error === undefined ? null : <p className={styles['error']}>{error}</p>}
+      </div>
+    )
+  }
 
   const stringAt = (source: unknown, key: string): string | undefined => {
     const value = getPath(source, [key])
@@ -376,6 +448,7 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
           />
           {shownKeyFailure === undefined ? null : <p className={styles['error']}>{t(shownKeyFailure)}</p>}
         </div>
+        {oauthCapable && props.credentialOnly !== true ? renderOauthControl(disabled) : null}
         {props.credentialOnly === true ? null : <details className={styles['customized']}>
           <summary className={styles['customizedSummary']}>{t('customized')}</summary>
           <div className={styles['customizedBody']}>

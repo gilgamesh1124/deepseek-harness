@@ -97,6 +97,15 @@ export const en = {
   onboardingSave: 'Save and continue',
   onboardingSaving: 'Saving…',
   keyRequired: 'Enter an API key to continue.',
+  oauthLabel: 'OAuth login',
+  oauthLoggedIn: 'Logged in (OAuth)',
+  oauthLoggedOut: 'Not logged in',
+  oauthLogin: 'Log in',
+  oauthStarting: 'Waiting for authorization…',
+  oauthLogout: 'Log out',
+  oauthOpenUrl: 'Open the authorization page',
+  oauthOpenVerification: 'Open and enter the code:',
+  oauthEnterCode: 'One-time code',
 }
 
 /** The settings.models namespace key union. */
@@ -197,4 +206,13 @@ export const zh: { [Key in keyof typeof en]: string } = {
   onboardingSave: '保存并继续',
   onboardingSaving: '保存中…',
   keyRequired: '请输入 API 密钥后继续。',
+  oauthLabel: '认证型登录',
+  oauthLoggedIn: '已登录 (OAuth)',
+  oauthLoggedOut: '未登录',
+  oauthLogin: '登录',
+  oauthStarting: '等待授权…',
+  oauthLogout: '退出',
+  oauthOpenUrl: '打开授权页面',
+  oauthOpenVerification: '打开并在其中输入：',
+  oauthEnterCode: '一次性代码',
 }

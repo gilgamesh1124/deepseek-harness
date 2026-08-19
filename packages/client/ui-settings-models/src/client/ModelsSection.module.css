@@ -269,6 +269,52 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/* OAuth login control: compact block beside the api-key field, using the
+   section's capsule-button and caption vocabulary. */
+.oauthBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  padding-top: 10px;
+}
+
+.oauthStatus {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.oauthLoginButton {
+  align-self: flex-start;
+  height: 32px;
+  border-radius: 16px;
+}
+
+.oauthCode {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border: 1px dashed var(--dsw-alias-border-l3);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.oauthLine {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+
+.oauthCodeValue {
+  font-family: var(--ds-font-family-code);
+  font-size: 13px;
+}
+
 .linkButton {
   box-sizing: border-box;
   display: inline-flex;

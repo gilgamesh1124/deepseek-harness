@@ -2961,6 +2961,16 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
       discoverModels: request => ok(request, {
         models: fixtureModelGroups().flatMap(group => group.models.map(model => ({ id: model.id, name: model.name }))),
       }),
+      // The fixture has no real OAuth endpoint, so login is a stub: status is
+      // never authenticated, start answers a device code a surface can render,
+      // and logout is a no-op.
+      oauthStatus: request => ok(request, { authenticated: false }),
+      oauthLogout: request => ok(request, {}),
+      oauthLoginStart: request => ok(request, {
+        userCode: 'FIXTURE-CODE',
+        verificationUri: 'https://fixture.local/device',
+        authenticated: false,
+      }),
     },
     respond(message: ClientResponse): Promise<RpcReceipt> {
       // Same routing discipline as the host: rpcId first, then the payload's
@@ -3129,6 +3139,9 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'llm.providers': return this.api.llm.providers(request)
       case 'llm.models': return this.api.llm.models(request)
       case 'llm.discoverModels': return this.api.llm.discoverModels(request, signal)
+      case 'llm.oauthStatus': return this.api.llm.oauthStatus(request)
+      case 'llm.oauthLogout': return this.api.llm.oauthLogout(request)
+      case 'llm.oauthLoginStart': return this.api.llm.oauthLoginStart(request)
     }
   }
 

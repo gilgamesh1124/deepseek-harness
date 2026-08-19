@@ -74,6 +74,53 @@ export interface LlmApi {
     }>,
     signal?: AbortSignal,
   ): Promise<RpcResponse<{ models: DiscoveredModelView[] }>>
+
+  /**
+   * Whether one provider route currently has a durable OAuth credential. Only
+   * routes the adapter family authenticates through OAuth are answered; asking
+   * about another route fails with `oauth-unsupported`.
+   */
+  oauthStatus(request: RpcRequest<{ provider: string }>): Promise<RpcResponse<OauthStatusView>>
+
+  /**
+   * Forget the stored OAuth credential of one provider route (logout).
+   * Idempotent for a route that has none.
+   */
+  oauthLogout(request: RpcRequest<{ provider: string }>): Promise<RpcResponse<{}>>
+
+  /**
+   * Start an OAuth login for one provider route. The device-code flow is the
+   * default; the handler runs the flow to completion in the background and
+   * returns the one-time code / verification URL (or the browser flow's
+   * authorization URL) to show the user, before the flow settles. Re-query
+   * `oauthStatus` to learn when the credential actually lands.
+   */
+  oauthLoginStart(
+    request: RpcRequest<{ provider: string; method?: OauthMethod }>,
+  ): Promise<RpcResponse<OauthLoginStartView>>
+}
+
+/** Login method a caller may select for an OAuth flow. */
+export type OauthMethod = 'browser' | 'device'
+
+/** Wire view of one provider route's OAuth state. */
+export interface OauthStatusView {
+  /** Whether a durable OAuth credential is currently stored for the route. */
+  authenticated: boolean
+  /** The stored auth method, present once authenticated; `oauth` is the only supported one. */
+  type?: string
+}
+
+/** Wire view returned by an OAuth login start. */
+export interface OauthLoginStartView {
+  /** Authorization URL of the browser flow, when the flow opened one. */
+  loginUrl?: string
+  /** One-time code of the device-code flow, when the flow issued one. */
+  userCode?: string
+  /** Verification URL the user opens to enter {@link OauthLoginStartView.userCode}. */
+  verificationUri?: string
+  /** Whether the credential was already persisted by the time login returned. */
+  authenticated: boolean
 }
 
 /** Wire view of one model an interrogated endpoint advertises. */
