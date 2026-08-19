@@ -176,6 +176,16 @@ export interface Config {
    * and registers them the moment a settings section supplies profiles.
    */
   providers?: Record<string, PiAiProviderProfile>
+  /**
+   * Path of the file-backed pi-ai credential store that persists
+   * authenticated (OAuth) logins. Omission uses `.oauth-credentials.json`
+   * under the harness home. Only routes the installed catalog authenticates
+   * natively (Codex) read and write it; api-key routes authenticate through
+   * `apiKeyEnv` and never touch it.
+   */
+  oauthStorePath?: string
+  /** Harness home used when {@link Config.oauthStorePath} is omitted; defaults to `$DSH_HOME` or `~/.dsh`. */
+  dshHome?: string
 }
 
 const thinkingBudgets = z.object({
@@ -254,6 +264,8 @@ const profile = z.object({
 /** Runtime schema for {@link Config}. */
 export const Config: z<Config> = z.object({
   providers: z.dict(profile).default({}),
+  oauthStorePath: z.string(),
+  dshHome: z.string(),
 })
 
 /**

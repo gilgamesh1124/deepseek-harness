@@ -934,18 +934,16 @@ describe('configurable-provider directory', () => {
     expect(ctx.llm.listConfigurableProviders()).toHaveLength(catalogOnly)
   })
 
-  it('withholds a catalog route this adapter cannot authenticate', async () => {
+  it('offers an OAuth-only catalog route this adapter can now authenticate', async () => {
     const ctx = await harness({})
     const offered = ctx.llm.listConfigurableProviders().map(entry => entry.provider)
 
     // `openai-codex` is the one installed provider that authenticates through
-    // OAuth alone. pi-ai resolves OAuth only from a *stored* credential, this
-    // adapter constructs its collection with no credential store, and nothing
-    // here runs a login flow — so every request on such a route fails with
-    // `Provider is not configured` before it goes out. Offering it would put a
-    // provider on the settings page that no amount of configuration can make
-    // work.
-    expect(offered).not.toContain('openai-codex')
+    // OAuth alone. pi-ai resolves OAuth from the durable credential store this
+    // plugin now supplies and runs its login flow, so the route is servable
+    // through a stored membership token. Offering it puts Codex on the
+    // settings page, where a user can configure the route and log in.
+    expect(offered).toContain('openai-codex')
     // A provider that offers OAuth *beside* an api-key method keeps its entry:
     // the key is a path this adapter can serve.
     expect(offered).toContain('anthropic')

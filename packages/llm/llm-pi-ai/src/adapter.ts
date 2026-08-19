@@ -24,6 +24,10 @@
 import { createModels, getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import type {
   Api,
+  AuthCheck,
+  AuthContext,
+  AuthInteraction,
+  CredentialStore,
   Model,
   Models,
   ModelThinkingLevel,
@@ -61,6 +65,11 @@ interface PiAiSnapshot {
   models: Models
 }
 
+/** Stable human-readable reason for an error surfaced on the OAuth command surface. */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 /** Constructor options for {@link PiAiAdapter}: the two resolution hooks the plugin owns. */
 export interface PiAiAdapterOptions {
   /** Current validated profiles by provider route; called once per operation. */
@@ -76,6 +85,16 @@ export interface PiAiAdapterOptions {
   resolveApiKey: (provider: string, profile: ResolvedPiAiProviderProfile) => Promise<string | undefined>
   /** Resolve the optional durable attachment service at request time. */
   resolveAttachments?: () => AttachmentStore | undefined
+  /**
+   * pi-ai credential store backing provider-native authentication (OAuth for
+   * the Codex route). Supplied by the plugin so a login persists across
+   * snapshots; `Models` runs OAuth refresh inside the store's serialized
+   * `modify`. Omitted, the store stays pi-ai's in-memory default and no OAuth
+   * login can persist.
+   */
+  credentials?: CredentialStore
+  /** Environment access for provider-native auth resolution; omission uses pi-ai's default. */
+  authContext?: AuthContext
   /**
    * Observe one assistant history message degrading to provider-neutral
    * conversion because its stored replay state is unusable by this build.
@@ -204,7 +223,10 @@ export class PiAiAdapter extends LlmAdapter {
   private current(): PiAiSnapshot {
     const profiles = this.config.profiles()
     if (this.snapshot?.profiles === profiles) return this.snapshot
-    const models: MutableModels = createModels()
+    const models: MutableModels = createModels({
+      ...this.config.credentials === undefined ? {} : { credentials: this.config.credentials },
+      ...this.config.authContext === undefined ? {} : { authContext: this.config.authContext },
+    })
     for (const profile of profiles.values()) models.setProvider(profile.piProvider)
     this.snapshot = { profiles, models }
     return this.snapshot
@@ -276,6 +298,38 @@ export class PiAiAdapter extends LlmAdapter {
         ...reasoningInfo(resolvedModel, defaultLevel),
       }
     })
+  }
+
+  /**
+   * Run a provider-native login and persist its credential. Only meaningful
+   * when the plugin supplied a durable `credentials` store; a route the
+   * installed catalog authenticates through OAuth alone (`openai-codex`) is
+   * the motivated case.
+   * @param provider - the provider route to authenticate.
+   * @param type - the login type; `'oauth'` for the Codex membership flow.
+   * @param interaction - the login interaction (method select, URL/device-code, prompts).
+   * @throws LlmError wrapped from pi-ai when the route or login type is unsupported.
+   */
+  async login(provider: string, type: 'oauth', interaction: AuthInteraction): Promise<void> {
+    try {
+      await this.current().models.login(provider, type, interaction)
+    } catch (error: unknown) {
+      throw new LlmError(`pi-ai login for "${provider}" failed: ${errorMessage(error)}`, 'AUTH', { cause: error })
+    }
+  }
+
+  /** Remove the stored credential for one provider route (logout). */
+  async logout(provider: string): Promise<void> {
+    try {
+      await this.current().models.logout(provider)
+    } catch (error: unknown) {
+      throw new LlmError(`pi-ai logout for "${provider}" failed: ${errorMessage(error)}`, 'AUTH', { cause: error })
+    }
+  }
+
+  /** Whether one provider route currently has complete native auth (e.g. a stored OAuth token). */
+  async authStatus(provider: string): Promise<AuthCheck | undefined> {
+    return this.current().models.checkAuth(provider)
   }
 
   async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {

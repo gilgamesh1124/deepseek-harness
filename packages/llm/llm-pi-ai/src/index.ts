@@ -55,16 +55,25 @@
  * @module @deepseek-ai/dsh-llm-pi-ai
  */
 
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { assertUsableApiKey, LlmError } from '@deepseek-ai/dsh-llm'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle, LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
 import { deepEqualJson, installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { PiAiAdapter } from './adapter.ts'
-import { catalogProviderIds, catalogProviderTakesApiKey } from './catalog.ts'
+import { catalogProviderIds, catalogProviderOffersOAuth, catalogProviderTakesApiKey } from './catalog.ts'
 import { assertServiceable, Config, resolveProfiles } from './config.ts'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { discoverModels } from './discovery.ts'
+import { FileCredentialStore } from './oauth-store.ts'
+import { authUrlInstructions, CommandInteraction, deviceCodeInstructions } from './interaction.ts'
+import type { LoginMethod } from './interaction.ts'
+
+/** Default filename of the file-backed OAuth credential store under the harness home. */
+const OAUTH_STORE_FILENAME = '.oauth-credentials.json'
 
 export { PiAiAdapter } from './adapter.ts'
 export type { PiAiAdapterOptions } from './adapter.ts'
@@ -134,13 +143,15 @@ function directoryEntries(
       declared: !catalog.has(provider),
     })
   }
-  // A provider whose only native method is OAuth leaves this adapter nothing
-  // to authenticate with, so offering it would put a card on the settings page
-  // whose own posture — no key, credentials discovered by the provider — fails
-  // every request. Catalog *membership* is unaffected, so `declare` above still
-  // answers what pi-ai ships.
+  // A provider is offered when this adapter can authenticate it: an api-key
+  // route through the credential seam, or an OAuth-native route (Codex is the
+  // shipped one) through the durable pi-ai credential store with login
+  // running from this plugin. A provider offering neither method leaves
+  // nothing to authenticate with, so offering it would put a card on the
+  // settings page whose own posture fails every request. Catalog *membership*
+  // is unaffected, so `declare` above still answers what pi-ai ships.
   for (const provider of catalog) {
-    if (catalogProviderTakesApiKey(provider)) declare(provider, provider)
+    if (catalogProviderTakesApiKey(provider) || catalogProviderOffersOAuth(provider)) declare(provider, provider)
   }
   for (const [provider, profile] of profiles) declare(provider, profile.displayName)
   return [...entries.values()]
@@ -197,9 +208,13 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
 
+  const storePath = config.oauthStorePath ?? join(resolveDshHome(config.dshHome), OAUTH_STORE_FILENAME)
+  const oauthStore = new FileCredentialStore(storePath)
+
   const adapter = new PiAiAdapter({
     profiles,
     resolveApiKey,
+    credentials: oauthStore,
     resolveAttachments: () => ctx.get('attachments'),
     onReplayDegrade: ({ provider, model, reason }) => {
       ctx.logger.warn(
@@ -315,4 +330,124 @@ export function apply(ctx: Context, config: Config): void {
       }
     },
   })
+
+  installOauthCommands(ctx, adapter)
+}
+
+/** A parsed `/llm-*` command line. */
+interface LoginArgs {
+  provider: string
+  method: LoginMethod
+  manualCode?: string
+}
+
+/**
+ * Parse a `/llm-login` argument line: an optional provider (default
+ * `openai-codex`), `--method browser|device`, and `--paste <code>` for the
+ * browser flow's pasted authorization code.
+ * @param raw - the command's verbatim argument string (may be empty).
+ * @returns the parsed login arguments.
+ */
+function parseLoginArgs(raw: string): LoginArgs {
+  const tokens = raw.trim().split(/\s+/).filter(token => token.length > 0)
+  let provider = 'openai-codex'
+  let method: LoginMethod = 'device'
+  let manualCode: string | undefined
+  let index = 0
+  if (tokens.length > 0 && tokens[0] !== undefined && !tokens[0].startsWith('--')) {
+    provider = tokens[0]
+    index = 1
+  }
+  for (; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token === '--method') {
+      const value = tokens[index + 1]
+      if (value === 'browser' || value === 'device') {
+        method = value
+        index += 1
+      }
+    } else if (token === '--paste') {
+      manualCode = tokens[index + 1]
+      index += 1
+    }
+  }
+  const args: LoginArgs = { provider, method }
+  if (manualCode !== undefined) args.manualCode = manualCode
+  return args
+}
+
+/** Render one login run's captured auth events into user instructions. */
+function renderLoginEvents(interaction: CommandInteraction): string {
+  const lines: string[] = []
+  for (const event of interaction.events()) {
+    const device = deviceCodeInstructions(event)
+    if (device !== undefined) lines.push(device)
+    const url = authUrlInstructions(event)
+    if (url !== undefined) lines.push(url)
+  }
+  return lines.length > 0 ? `\n${lines.join('\n')}` : ''
+}
+
+/**
+ * Register the `/llm-login`, `/llm-logout`, and `/llm-auth` commands for the
+ * OAuth-native provider routes. Commands are registered only when the
+ * human-command service is mounted; otherwise login stays reachable through
+ * the adapter's `login`/`logout`/`authStatus` methods.
+ */
+function installOauthCommands(ctx: Context, adapter: PiAiAdapter): void {
+  const commands = ctx.get('commands')
+  if (commands === undefined) return
+  ctx.effect(() => commands.register({
+    name: 'llm-login',
+    description: 'Log in a provider that authenticates through OAuth (Codex / ChatGPT Plus/Pro)',
+    handler: async (invocation: CommandInvocation): Promise<CommandResult> => {
+      const args = parseLoginArgs(invocation.rawInput)
+      const interaction = new CommandInteraction({
+        method: args.method,
+        ...args.manualCode === undefined ? {} : { manualCode: args.manualCode },
+      }, `"${args.provider}"`)
+      try {
+        await adapter.login(args.provider, 'oauth', interaction)
+        return {
+          kind: 'success',
+          text: `Logged in "${args.provider}".${renderLoginEvents(interaction)}`,
+        }
+      } catch (error: unknown) {
+        return {
+          kind: 'error',
+          text: `Login for "${args.provider}" failed: ${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
+    },
+  }), 'llm-pi-ai: llm-login command')
+  ctx.effect(() => commands.register({
+    name: 'llm-logout',
+    description: 'Log out a provider that authenticates through OAuth (remove its stored credential)',
+    handler: async (invocation: CommandInvocation): Promise<CommandResult> => {
+      const provider = invocation.rawInput.trim().split(/\s+/)[0] || 'openai-codex'
+      try {
+        await adapter.logout(provider)
+        return { kind: 'success', text: `Logged out "${provider}".` }
+      } catch (error: unknown) {
+        return {
+          kind: 'error',
+          text: `Logout for "${provider}" failed: ${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
+    },
+  }), 'llm-pi-ai: llm-logout command')
+  ctx.effect(() => commands.register({
+    name: 'llm-auth',
+    description: 'Show whether an OAuth-native provider currently has stored credentials',
+    handler: async (invocation: CommandInvocation): Promise<CommandResult> => {
+      const provider = invocation.rawInput.trim().split(/\s+/)[0] || 'openai-codex'
+      const status = await adapter.authStatus(provider)
+      return {
+        kind: 'success',
+        text: status === undefined
+          ? `"${provider}" has no stored credentials (run /llm-login ${provider}).`
+          : `"${provider}" is authenticated (${status.type}).`,
+      }
+    },
+  }), 'llm-pi-ai: llm-auth command')
 }

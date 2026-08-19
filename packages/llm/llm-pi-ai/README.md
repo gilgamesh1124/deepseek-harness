@@ -99,7 +99,7 @@ Resolution still fails loud, naming the offending route and model, when a route 
 
 `baseURL` sets the endpoint of every model on the route, so private proxies such as `https://proxy.example.com:8443` remain supported; a catalog route that omits it keeps each catalog model's own endpoint. Naming `api` on a catalog route repoints the whole route at that protocol, which is how a deployment moves a provider between, say, Responses and Chat Completions.
 
-`supportedProtocols()` is deliberately narrower than pi-ai's full streaming API set: it holds only the protocols a profile can *completely* describe with a key, an endpoint, and headers. Bedrock signs with SigV4 over AWS credentials and a region, Vertex needs a project, a location, and application-default credentials, Azure needs provider environment plus an api-version, and Codex authenticates through OAuth — offering those would hand back a route that cannot authenticate. Catalog routes still reach them through their own provider; only an explicit override is refused.
+`supportedProtocols()` is deliberately narrower than pi-ai's full streaming API set: it holds only the protocols a profile can *completely* describe with a key, an endpoint, and headers. Bedrock signs with SigV4 over AWS credentials and a region, Vertex needs a project, a location, and application-default credentials, and Azure needs provider environment plus an api-version — offering those would hand back a route that cannot authenticate. A catalog route still reaches those protocols through its own provider; only an explicit override is refused. OAuth-only catalog routes (Codex) are the one exception: they are not describable through the `api` field, but a configured route authenticates through its native OAuth flow once this plugin supplies a durable credential store — see [Auth-based login (OAuth)](#auth-based-login-oauth).
 
 ## Dynamic configuration (settings + credentials)
 
@@ -116,6 +116,23 @@ A model **without** that metadata — a hand-declared one whose entry declares n
 Supported profile fields are `apiKeyEnv`, `displayName`, `api`, `baseURL`, `models`, `modelOverrides`, `compat`, `defaultContextWindow`, `defaultMaxTokens`, `defaultInput`, `headers`, `reasoning`, `thinkingBudgets`, `cacheRetention`, `transport`, `timeoutMs`, `websocketConnectTimeoutMs`, `streamIdleTimeoutMs`, and `retryPolicy`. Each profile's optional retry policy is captured with that provider route; omission uses bounded normal defaults. The stream-idle interval is a positive finite Node timer delay, defaults to five minutes, and covers only an outstanding provider read, not consumer think time. Harness app attribution wins a conflicting configured header name.
 
 The adapter forces pi-ai's SDK `maxRetries` to zero so one `stream()` call makes one provider request. The removed profile fields `maxRetries` and `maxRetryDelayMs` fail load instead of silently multiplying or hiding the separately composed agent-level retry budget. Idle expiry aborts the SDK's stable request signal and surfaces `TIMEOUT`; an earlier caller abort remains `ABORTED`.
+
+## Auth-based login (OAuth)
+
+A provider the installed catalog authenticates through OAuth alone (Codex, i.e. a ChatGPT Plus/Pro membership) logs in with a native flow instead of an API key. The plugin supplies a durable pi-ai credential store — `.oauth-credentials.json` under the harness home, `0600` in a `0700` directory, cross-process write-locked — so a stored membership token survives restarts and `Models` auto-refreshes it from the refresh token as it nears expiry.
+
+The route itself is ordinary configuration: add an `openai-codex` profile (an empty `{}` is enough, since the catalog supplies the models). Because the adapter can now authenticate it, it is offered in the configurable-provider directory like any api-key route.
+
+Login and logout run over the human-command channel:
+
+```text
+/llm-login openai-codex                  device-code flow: prints a code + verification URL, polls until you authorize
+/llm-login openai-codex --method browser --paste <code>   browser flow: pasted authorization code / redirect URL
+/llm-logout openai-codex
+/llm-auth   openai-codex
+```
+
+The device-code flow is the headless-friendly path and the default. `oauthStorePath`/`dshHome` configure the store's location; they are plugin config, never secrets — the file itself holds the token. A refusal to refresh (`invalid_grant`, e.g. a revoked session) surfaces as a coded `AUTH` error and the fix is `/llm-login` again.
 
 ## Endpoint interrogation
 
@@ -189,7 +206,8 @@ Recorded response content appends to the next request and does not invalidate it
 
 ## Known Limitations and Deferred Work
 
-- **A provider that authenticates through OAuth alone is not offered** — pi-ai resolves OAuth from a *stored* OAuth credential, and this adapter builds its `Models` collection with no credential store and runs no login flow, so every request on such a route fails `Provider is not configured` before it goes out. The configurable-provider directory withholds them; `openai-codex` is the only one the installed catalog ships. A route a settings document already names keeps its entry so a configuration surface can edit or delete it, and `apiKeyEnv` still authenticates it with that key — which for Codex is a token that expires with nothing here to refresh it.
+- **OAuth routes need a login and their token never expires gracefully alone** — a route that authenticates through pi-ai's native OAuth (Codex) keeps a stored credential only after a successful `login`, and `Models` refreshes the access token from the refresh token as it nears expiry while the refresh token remains valid. Refresh failure (`invalid_grant` — e.g. the user revoked the session) surfaces a coded `AUTH` error naming the route, and the fix is to log in again with `/llm-login`; nothing here re-prompts automatically.
+- **The credential store is file-backed, not an OS keychain** — the durable pi-ai store is `.oauth-credentials.json` (`0600` under a `0700` directory) beside the env credential store. It can be read by any process running as the same user, like every other file the user owns; an OS-keychain store is deferred.
 - **Provider-native discovery reads the process environment only** — a route naming no credential defers to the catalog provider's own resolution, which interrogates environment variables (`AZURE_OPENAI_API_KEY`, `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, and each provider's own set). It reads no local credential directory, so `~/.aws/credentials` without an exported `AWS_PROFILE` resolves as unconfigured, and a value held by the harness credential seam is invisible to it unless the process environment carries it too.
 - **Settings can add or override routes, not remove composition routes** — the user layer merges over the composition `base`, so deleting a `cordis.yml`-provided provider is a composition change; `replace` on the namespace only resets the user layer.
 - **The layered merge has no delete for dict keys** — the settings seam merges the composition `base` and the user layer per key, recursively, so a `reasoningEfforts` level, `modelOverrides` entry, or `compat` field the base declares cannot be removed by the user layer, only overridden — and for `reasoningEfforts` absence *is* the meaning ("not offered"), so a base-declared level stays offered. This only triggers when a `cordis.yml` entry config declares per-model reasoning fields for the same model the user layer edits; the supported posture is to leave those to the settings document (the shipped composition mounts the adapter dormant), and a `models` list is an array replacing wholesale, which is the in-band escape.
