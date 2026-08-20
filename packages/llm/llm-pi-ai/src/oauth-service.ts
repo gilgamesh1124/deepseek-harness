@@ -94,7 +94,11 @@ export class LlmOauth extends Service {
    * completion as a background task; this returns as soon as the flow has
    * issued its first device code or authorization URL, which is what the caller
    * shows the user. `status` reports authenticated once the background flow
-   * persists the credential.
+   * persists the credential. A flow that settles in failure before issuing any
+   * event — a route with no registered provider, or a transport error — rejects
+   * with that failure instead of waiting out the window, and the rejection is
+   * absorbed so it can never surface as an unhandled promise rejection that
+   * takes the host down.
    * @param provider - the provider route to authenticate.
    * @param method - the login method to answer the flow's method select with.
    * @returns the device-code / browser fields to present, before login settled.
@@ -109,7 +113,15 @@ export class LlmOauth extends Service {
     const interaction = new CommandInteraction({ method })
     const run = this.adapter.login(provider, 'oauth', interaction)
     this.running.set(provider, run)
-    void run.finally(() => { this.running.delete(provider) })
+    // Track settlement so the wait below can surface an early failure; the
+    // rejection is handled here (never left as an unhandled rejection), and the
+    // in-flight row cleans itself up on either outcome.
+    let settled = false
+    let failure: unknown
+    void run.then(
+      () => { settled = true },
+      (error: unknown) => { settled = true; failure = error },
+    ).finally(() => { this.running.delete(provider) })
     // The device-code flow emits its one-time code almost immediately; the
     // browser flow emits its authorization URL the same way. Wait for the first
     // of them so login returns what the caller should show, even though the
@@ -118,6 +130,11 @@ export class LlmOauth extends Service {
     while (Date.now() < deadline) {
       const fields = this.fieldsOf(interaction.events())
       if (fields !== undefined) return { ...fields, authenticated: false }
+      if (settled) {
+        // The flow gave up before emitting anything; surface the real reason
+        // instead of reporting a silent "not authenticated".
+        throw failure instanceof Error ? failure : new Error(String(failure ?? `llmOauth: login for "${provider}" failed`))
+      }
       await new Promise<void>((resolve) => { setTimeout(resolve, 20) })
     }
     // A flow that returned neither event within the window still handed its
